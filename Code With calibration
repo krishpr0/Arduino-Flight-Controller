@@ -27,7 +27,7 @@ void setup() {
   Serial.begin(115200);
 
   // Start the PPM function on PIN A0
-  ppm.begin(A0, false);
+  ppm.begin(3, false);
 
   // Attach ESCs to pins
   esc_1.attach(5);  // Motor 1 (Front-left)
