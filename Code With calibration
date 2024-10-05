@@ -26,7 +26,7 @@ void setup() {
   // Start the serial port to display data 
   Serial.begin(115200);
 
-  // Start the PPM function on PIN A0
+  // Start the PPM function on PIN 3
   ppm.begin(3, false);
 
   // Attach ESCs to pins
