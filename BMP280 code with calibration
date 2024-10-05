@@ -1,0 +1,40 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+
+// Create an object for the BMP280 sensor
+Adafruit_BMP280 bmp; // I2C interface
+
+// Define your local sea-level pressure (in hPa)
+float seaLevelPressure = 1013.25;  // Adjust based on your local sea-level pressure
+
+void setup() {
+  // Start serial communication
+  Serial.begin(115200);
+
+  // Initialize the BMP280 sensor
+  if (!bmp.begin(0x76)) {  // I2C address for BMP280 (can also be 0x77)
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+    while (1);
+  }
+
+  // Set the sampling configurations for accuracy
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     // Operating mode
+                  Adafruit_BMP280::SAMPLING_X2,     // Temperature oversampling
+                  Adafruit_BMP280::SAMPLING_X16,    // Pressure oversampling
+                  Adafruit_BMP280::FILTER_X16,      // Filtering
+                  Adafruit_BMP280::STANDBY_MS_1);   // Reduced standby time (1ms)
+}
+
+void loop() {
+  // Read altitude
+  float altitude = bmp.readAltitude(seaLevelPressure);  // Calibrated altitude
+
+  // Print only the altitude value
+  Serial.print("Altitude = ");
+  Serial.print(altitude);
+  Serial.println(" meters");
+
+  // Delay for 200ms to get fast, frequent readings
+  delay(200);
+}
