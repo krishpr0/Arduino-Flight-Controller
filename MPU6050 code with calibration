@@ -1,0 +1,134 @@
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+// Create an MPU6050 object
+Adafruit_MPU6050 mpu;
+
+// Variables to store calibration values
+float gyroXOffset = 0;
+float gyroYOffset = 0;
+float gyroZOffset = 0;
+
+float accelXOffset = 0;
+float accelYOffset = 0;
+float accelZOffset = 0;
+
+// Variables to store time
+unsigned long previousTime = 0;
+float yaw = 0;
+
+// Number of calibration samples
+const int calibrationSamples = 1000;
+
+void setup() {
+  // Start Serial Monitor
+  Serial.begin(115200);
+
+  // Initialize MPU6050
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) {
+      delay(10);
+    }
+  }
+
+  Serial.println("MPU6050 Found!");
+
+  // Set the accelerometer range to +-2G and gyroscope range to 250°/s
+  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+  
+  // Set the data rate to 1 kHz
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  // Calibrate the MPU6050
+  calibrateMPU6050();
+
+  delay(100);
+}
+
+void loop() {
+  // Get current time
+  unsigned long currentTime = millis();
+  float deltaTime = (currentTime - previousTime) / 1000.0; // Delta time in seconds
+  previousTime = currentTime;
+
+  // Get new sensor events
+  sensors_event_t accel, gyro, temp;
+  mpu.getEvent(&accel, &gyro, &temp);
+
+  // Adjust gyro readings by subtracting the offsets
+  float gyroX = gyro.gyro.x - gyroXOffset;
+  float gyroY = gyro.gyro.y - gyroYOffset;
+  float gyroZ = gyro.gyro.z - gyroZOffset;
+
+  // Adjust accel readings by subtracting the offsets
+  float accelX = accel.acceleration.x - accelXOffset;
+  float accelY = accel.acceleration.y - accelYOffset;
+  float accelZ = accel.acceleration.z - accelZOffset;
+
+  // Calculate Roll and Pitch from Accelerometer data
+  float roll = atan2(accelY, accelZ) * 180 / PI;
+  float pitch = atan2(-accelX, sqrt(accelY * accelY + accelZ * accelZ)) * 180 / PI;
+
+  // Calculate Yaw (integrating gyroscope Z-axis data)
+  yaw += gyroZ * deltaTime; // Yaw in degrees
+
+  // Print Roll, Pitch, and Yaw values
+  Serial.print("Roll: "); Serial.print(roll);
+  Serial.print("\tPitch: "); Serial.print(pitch);
+  Serial.print("\tYaw: "); Serial.println(yaw);
+
+  // Wait a bit before next loop
+  delay(500);
+}
+
+// Function to calibrate MPU6050
+void calibrateMPU6050() {
+  Serial.println("Calibrating MPU6050...");
+  
+  float gyroXSum = 0;
+  float gyroYSum = 0;
+  float gyroZSum = 0;
+
+  float accelXSum = 0;
+  float accelYSum = 0;
+  float accelZSum = 0;
+
+  // Collect calibrationSamples samples for averaging
+  for (int i = 0; i < calibrationSamples; i++) {
+    sensors_event_t accel, gyro, temp;
+    mpu.getEvent(&accel, &gyro, &temp);
+
+    // Sum the gyroscope readings
+    gyroXSum += gyro.gyro.x;
+    gyroYSum += gyro.gyro.y;
+    gyroZSum += gyro.gyro.z;
+
+    // Sum the accelerometer readings
+    accelXSum += accel.acceleration.x;
+    accelYSum += accel.acceleration.y;
+    accelZSum += accel.acceleration.z;
+
+    delay(5); // Short delay between readings
+  }
+
+  // Calculate the average offsets for gyro and accelerometer
+  gyroXOffset = gyroXSum / calibrationSamples;
+  gyroYOffset = gyroYSum / calibrationSamples;
+  gyroZOffset = gyroZSum / calibrationSamples;
+
+  accelXOffset = accelXSum / calibrationSamples;
+  accelYOffset = accelYSum / calibrationSamples;
+  accelZOffset = (accelZSum / calibrationSamples) - 9.81; // Subtract gravity (9.81 m/s^2)
+
+  Serial.println("Calibration complete.");
+  Serial.print("Gyro X Offset: "); Serial.println(gyroXOffset);
+  Serial.print("Gyro Y Offset: "); Serial.println(gyroYOffset);
+  Serial.print("Gyro Z Offset: "); Serial.println(gyroZOffset);
+
+  Serial.print("Accel X Offset: "); Serial.println(accelXOffset);
+  Serial.print("Accel Y Offset: "); Serial.println(accelYOffset);
+  Serial.print("Accel Z Offset: "); Serial.println(accelZOffset);
+}
