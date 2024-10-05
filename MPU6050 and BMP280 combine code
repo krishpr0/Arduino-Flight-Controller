@@ -1,0 +1,66 @@
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+
+Adafruit_MPU6050 mpu;
+Adafruit_BMP280 bmp;  // I2C
+
+float pitch, roll, yaw;  // MPU6050 variables
+float altitude;          // BMP280 variable
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize MPU6050
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) {
+      delay(10);
+    }
+  }
+  Serial.println("MPU6050 Found!");
+
+  // Set up the sensor ranges for the MPU6050
+  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
+
+  // Initialize BMP280
+  if (!bmp.begin(0x76)) {
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+    while (1);
+  }
+  Serial.println("BMP280 Found!");
+
+  // Set up BMP280 for pressure and temperature measurements
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     // Operating Mode.
+                  Adafruit_BMP280::SAMPLING_X2,     // Temp. oversampling
+                  Adafruit_BMP280::SAMPLING_X16,    // Pressure oversampling
+                  Adafruit_BMP280::FILTER_X16,      // Filtering.
+                  Adafruit_BMP280::STANDBY_MS_500); // Standby time.
+}
+
+void loop() {
+  // Read data from MPU6050
+  sensors_event_t accel, gyro, temp;
+  mpu.getEvent(&accel, &gyro, &temp);
+
+  // Calculate roll, pitch, yaw
+  pitch = atan2(accel.acceleration.y, accel.acceleration.z) * 180 / PI;
+  roll = atan2(accel.acceleration.x, accel.acceleration.z) * 180 / PI;
+  yaw = gyro.gyro.z;  // Z-axis gyroscope for yaw
+
+  // Read altitude from BMP280
+  altitude = bmp.readAltitude(1013.25);  // Assuming sea level pressure is 1013.25 hPa
+
+  // Print the MPU6050 and BMP280 values
+  Serial.print("Pitch: "); Serial.print(pitch);
+  Serial.print(" | Roll: "); Serial.print(roll);
+  Serial.print(" | Yaw: "); Serial.print(yaw);
+  Serial.print(" | Altitude: "); Serial.print(altitude);
+  Serial.println(" m");
+
+  delay(500);
+}
+
