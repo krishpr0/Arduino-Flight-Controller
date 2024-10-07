@@ -1,0 +1,163 @@
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+#include <Servo.h>
+#include "ppm.h"
+
+// Create servo objects to control ESCs
+Servo esc_1;
+Servo esc_2;
+Servo esc_3;
+Servo esc_4;
+
+// PPM channel layout
+#define THROTTLE 3
+#define ROLL     1
+#define PITCH    2
+#define YAW      4
+
+// Neutral values for motor control
+const int neutralThrottle = 1000;
+const int maxThrottle = 2000;
+const int minThrottle = 1000;
+
+// Sensors
+Adafruit_MPU6050 mpu;
+Adafruit_BMP280 bmp;
+
+// Variables for MPU6050 (stabilization)
+float pitch, roll, yaw;
+
+// Variables for BMP280 (altitude hold)
+float altitude, targetAltitude = 2.0; // Target altitude in meters
+float previousAltitudeError = 0;      // For derivative control
+float altitudeHoldThrottle = 0;       // Adjusted throttle for altitude hold
+
+// PID control parameters
+float Kp = 50.0;  // Proportional gain
+float Ki = 0.2;   // Integral gain
+float Kd = 30.0;  // Derivative gain
+
+float integral = 0;  // Integral term for PID
+float previousError = 0;  // For derivative calculation
+
+// Loop interval time (time in milliseconds between updates)
+const long interval = 50;
+unsigned long previousMillis = 0; // Stores last time loop was updated
+
+void setup() {
+  Serial.begin(115200);
+
+  // Start the PPM function on PIN A0
+  ppm.begin(3, false);
+
+  // Attach ESCs to pins
+  esc_1.attach(5);  // Motor 1 (Front-left)
+  esc_2.attach(6);  // Motor 2 (Front-right)
+  esc_3.attach(9);  // Motor 3 (Back-right)
+  esc_4.attach(10); // Motor 4 (Back-left)
+
+  // Initialize MPU6050
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) delay(10);
+  }
+  Serial.println("MPU6050 Found!");
+  
+  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
+
+  // Initialize BMP280
+  if (!bmp.begin(0x76)) {
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+    while (1);
+  }
+  Serial.println("BMP280 Found!");
+
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     // Operating Mode.
+                  Adafruit_BMP280::SAMPLING_X2,     // Temp. oversampling
+                  Adafruit_BMP280::SAMPLING_X16,    // Pressure oversampling
+                  Adafruit_BMP280::FILTER_X16,      // Filtering.
+                  Adafruit_BMP280::STANDBY_MS_500); // Standby time.
+
+  // Initialize motors with neutral throttle
+  setThrottle(neutralThrottle);
+  delay(1000);
+}
+
+void loop() {
+  // Interval at which the PPM is updated
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+
+    // Read PPM values
+    short throttle  = ppm.read_channel(THROTTLE);
+    short rollInput = ppm.read_channel(ROLL) - 1500;  // Centering roll
+    short pitchInput = ppm.read_channel(PITCH) - 1500; // Centering pitch
+    short yawInput  = ppm.read_channel(YAW) - 1500;   // Centering yaw
+
+    // MPU6050 orientation data
+    sensors_event_t accel, gyro, temp;
+    mpu.getEvent(&accel, &gyro, &temp);
+    
+    // Calculate roll, pitch, yaw from MPU6050
+    pitch = atan2(accel.acceleration.y, accel.acceleration.z) * 180 / PI;
+    roll = atan2(accel.acceleration.x, accel.acceleration.z) * 180 / PI;
+    yaw = gyro.gyro.z;  // Gyro data for yaw
+
+    // Read altitude from BMP280
+    altitude = bmp.readAltitude(1014.0);  // Assumes sea level pressure of 1014 hPa
+    
+    // PID control for altitude hold
+    float altitudeError = targetAltitude - altitude;
+    integral += altitudeError * interval / 1000.0; // Integral term
+    float derivative = (altitudeError - previousError) / (interval / 1000.0); // Derivative term
+
+    // Adjust throttle using PID formula
+    altitudeHoldThrottle = Kp * altitudeError + Ki * integral + Kd * derivative;
+    previousError = altitudeError;
+
+    // Apply altitude hold throttle to PPM throttle input
+    throttle += constrain(altitudeHoldThrottle, -200, 200);
+
+    // Adjust motor speeds based on PPM and sensor data (basic proportional control)
+    int motor_1_speed = throttle + pitchInput + rollInput - yawInput; // Front-left motor
+    int motor_2_speed = throttle + pitchInput - rollInput + yawInput; // Front-right motor
+    int motor_3_speed = throttle - pitchInput - rollInput - yawInput; // Back-right motor
+    int motor_4_speed = throttle - pitchInput + rollInput + yawInput; // Back-left motor
+
+    // Constrain motor values
+    motor_1_speed = constrain(motor_1_speed, minThrottle, maxThrottle);
+    motor_2_speed = constrain(motor_2_speed, minThrottle, maxThrottle);
+    motor_3_speed = constrain(motor_3_speed, minThrottle, maxThrottle);
+    motor_4_speed = constrain(motor_4_speed, minThrottle, maxThrottle);
+
+    // Write the constrained values to the ESCs
+    esc_1.writeMicroseconds(motor_1_speed);
+    esc_2.writeMicroseconds(motor_2_speed);
+    esc_3.writeMicroseconds(motor_3_speed);
+    esc_4.writeMicroseconds(motor_4_speed);
+
+    // Print values for debugging
+    Serial.print("Pitch: "); Serial.print(pitch);
+    Serial.print(" | Roll: "); Serial.print(roll);
+    Serial.print(" | Yaw: "); Serial.print(yaw);
+    Serial.print(" | Altitude: "); Serial.print(altitude);
+    Serial.print(" | Altitude Hold Throttle: "); Serial.print(altitudeHoldThrottle);
+    Serial.print(" | M1: "); Serial.print(motor_1_speed);
+    Serial.print(" | M2: "); Serial.print(motor_2_speed);
+    Serial.print(" | M3: "); Serial.print(motor_3_speed);
+    Serial.print(" | M4: "); Serial.println(motor_4_speed);
+  }
+}
+
+// Function to set throttle for all ESCs
+void setThrottle(int value) {
+  esc_1.writeMicroseconds(value);
+  esc_2.writeMicroseconds(value);
+  esc_3.writeMicroseconds(value);
+  esc_4.writeMicroseconds(value);
+}
