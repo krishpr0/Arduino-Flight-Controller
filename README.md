@@ -1,29 +1,31 @@
 ```
-// Include the PPM library
+#include <Servo.h>
 #include "ppm.h"
 
-// Include the Servo library (used to control ESCs)
-#include <Servo.h>
-
-// Create servo objects to control ESCs (which control motors)
+// Create servo objects to control ESCs
 Servo esc_1;
 Servo esc_2;
 Servo esc_3;
 Servo esc_4;
 
-// PPM channel layout (update for your situation)
-#define THROTTLE        3
-#define ROLL            1
-#define PITCH           2
-#define YAW             4
+// PPM channel layout
+#define THROTTLE 3
+#define ROLL     1
+#define PITCH    2
+#define YAW      4
+#define ARMING   5 // Arming channel
 
 // Neutral values for motor control
-const int neutralThrottle = 1000; // Min throttle to arm ESCs (usually between 1000 and 2000)
-const int neutralYaw = 1500;
+const int neutralThrottle = 1000; // Min throttle to arm ESCs
+const int maxThrottle = 2000;      // Max throttle
+const int minThrottle = 1000;      // Min throttle
 
 // Loop interval time (time in milliseconds between updates)
 const long interval = 50;
 unsigned long previousMillis = 0; // Stores last time loop was updated
+
+// Arming state
+bool isArmed = false;
 
 void setup() {
   // Start the serial port to display data 
@@ -36,15 +38,23 @@ void setup() {
   esc_1.attach(5);  // Motor 1 (Front-left)
   esc_2.attach(6);  // Motor 2 (Front-right)
   esc_3.attach(9);  // Motor 3 (Back-right)
-  esc_4.attach(10);  // Motor 4 (Back-left)
+  esc_4.attach(10); // Motor 4 (Back-left)
 
   // Initialize motors with neutral throttle (safety)
-  esc_1.writeMicroseconds(neutralThrottle);
-  esc_2.writeMicroseconds(neutralThrottle);
-  esc_3.writeMicroseconds(neutralThrottle);
-  esc_4.writeMicroseconds(neutralThrottle);
-
+  setThrottle(neutralThrottle);
   delay(1000); // Allow some time for ESC calibration
+
+  // Set throttle to maximum to start calibration
+  Serial.println("Setting throttle to maximum...");
+  setThrottle(maxThrottle);
+  delay(5000); // Wait for ESCs to recognize max throttle
+
+  // Set throttle to minimum
+  Serial.println("Setting throttle to minimum...");
+  setThrottle(minThrottle);
+  delay(5000); // Wait for ESCs to recognize min throttle
+
+  Serial.println("ESC Calibration completed.");
 }
 
 void loop() {
@@ -58,47 +68,68 @@ void loop() {
     short roll      = ppm.read_channel(ROLL) - 1500;  // Centering roll
     short pitch     = ppm.read_channel(PITCH) - 1500; // Centering pitch
     short yaw       = ppm.read_channel(YAW) - 1500;   // Centering yaw
+    short arming    = ppm.read_channel(ARMING); // Read arming channel
 
-    // Adjust the throttle, roll, pitch, and yaw for drone control
-    // Mix inputs to control each motor's speed
+    // Check if the arming channel is in the armed state (e.g., above 1500)
+    if (arming > 1500 && !isArmed) {
+      isArmed = true;
+      Serial.println("Arming the motors...");
+      setThrottle(neutralThrottle); // Arm the motors with neutral throttle
+    } else if (arming <= 1500 && isArmed) {
+      isArmed = false;
+      Serial.println("Disarming the motors...");
+      setThrottle(neutralThrottle); // Disarm the motors when arming is off
+    }
 
-    // Front-left motor (M1)
-    int motor_1_speed = throttle + pitch + roll - yaw;
-    // Front-right motor (M2)
-    int motor_2_speed = throttle + pitch - roll + yaw;
-    // Back-right motor (M3)
-    int motor_3_speed = throttle - pitch - roll - yaw;
-    // Back-left motor (M4)
-    int motor_4_speed = throttle - pitch + roll + yaw;
+    // If armed, update motor speeds
+    if (isArmed) {
+      // Adjust the throttle, roll, pitch, and yaw for drone control
+      int motor_1_speed = throttle + pitch + roll - yaw; // Front-left motor
+      int motor_2_speed = throttle + pitch - roll + yaw; // Front-right motor
+      int motor_3_speed = throttle - pitch - roll - yaw; // Back-right motor
+      int motor_4_speed = throttle - pitch + roll + yaw; // Back-left motor
 
-    // Constrain motor values to be between 1000 and 2000 microseconds
-    motor_1_speed = constrain(motor_1_speed, 1000, 2000);
-    motor_2_speed = constrain(motor_2_speed, 1000, 2000);
-    motor_3_speed = constrain(motor_3_speed, 1000, 2000);
-    motor_4_speed = constrain(motor_4_speed, 1000, 2000);
+      // Constrain motor values to be between minThrottle and maxThrottle
+      motor_1_speed = constrain(motor_1_speed, minThrottle, maxThrottle);
+      motor_2_speed = constrain(motor_2_speed, minThrottle, maxThrottle);
+      motor_3_speed = constrain(motor_3_speed, minThrottle, maxThrottle);
+      motor_4_speed = constrain(motor_4_speed, minThrottle, maxThrottle);
 
-    // Write the constrained values to the ESCs
-    esc_1.writeMicroseconds(motor_1_speed);
-    esc_2.writeMicroseconds(motor_2_speed);
-    esc_3.writeMicroseconds(motor_3_speed);
-    esc_4.writeMicroseconds(motor_4_speed);
+      // Write the constrained values to the ESCs
+      esc_1.writeMicroseconds(motor_1_speed);
+      esc_2.writeMicroseconds(motor_2_speed);
+      esc_3.writeMicroseconds(motor_3_speed);
+      esc_4.writeMicroseconds(motor_4_speed);
 
-    // Print the values to the Serial Monitor for debugging
-    Serial.print("Throttle: ");
-    Serial.print(throttle);
-    Serial.print("\tRoll: ");
-    Serial.print(roll + 1500);  // Print actual value from PPM
-    Serial.print("\tPitch: ");
-    Serial.print(pitch + 1500); // Print actual value from PPM
-    Serial.print("\tYaw: ");
-    Serial.print(yaw + 1500);   // Print actual value from PPM
-    Serial.print("\tM1: ");
-    Serial.print(motor_1_speed);
-    Serial.print("\tM2: ");
-    Serial.print(motor_2_speed);
-    Serial.print("\tM3: ");
-    Serial.print(motor_3_speed);
-    Serial.print("\tM4: ");
-    Serial.println(motor_4_speed);
+      // Print the values to the Serial Monitor for debugging
+      Serial.print("Throttle: ");
+      Serial.print(throttle);
+      Serial.print("\tRoll: ");
+      Serial.print(roll + 1500);  // Print actual value from PPM
+      Serial.print("\tPitch: ");
+      Serial.print(pitch + 1500); // Print actual value from PPM
+      Serial.print("\tYaw: ");
+      Serial.print(yaw + 1500);   // Print actual value from PPM
+      Serial.print("\tM1: ");
+      Serial.print(motor_1_speed);
+      Serial.print("\tM2: ");
+      Serial.print(motor_2_speed);
+      Serial.print("\tM3: ");
+      Serial.print(motor_3_speed);
+      Serial.print("\tM4: ");
+      Serial.println(motor_4_speed);
+    } else {
+      // If not armed, set motors to neutral throttle
+      setThrottle(neutralThrottle);
+    }
   }
 }
+
+// Function to set throttle for all ESCs
+void setThrottle(int value) {
+  esc_1.writeMicroseconds(value);
+  esc_2.writeMicroseconds(value);
+  esc_3.writeMicroseconds(value);
+  esc_4.writeMicroseconds(value);
+}
+```
