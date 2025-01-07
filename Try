@@ -1,0 +1,46 @@
+#include <Kalman.h>
+
+// Create Kalman filter objects
+Kalman kalmanAltitude;
+Kalman kalmanPitch;
+Kalman kalmanRoll;
+
+unsigned long previousMillis = 0;  // For tracking time
+
+void setup() {
+  Serial.begin(115200);
+  // Initialize sensors or other necessary hardware here
+}
+
+void loop() {
+  // Example sensor data (replace these with actual sensor readings)
+  float rawAltitude = 1000.0; // Example altitude value
+  float pitch = 0.5;          // Example pitch value
+  float roll = 0.2;           // Example roll value
+  float rate = 0.0;           // Replace with angular rate from a gyroscope if available
+
+  // Calculate time delta
+  unsigned long currentMillis = millis();
+  float dt = (currentMillis - previousMillis) / 1000.0; // Time difference in seconds
+  previousMillis = currentMillis;
+
+  // Ensure dt is non-zero to avoid divide-by-zero errors
+  if (dt <= 0) dt = 0.001;
+
+  // Kalman filter updates
+  float filteredAltitude = kalmanAltitude.getAngle(rawAltitude, rate, dt);
+  float filteredPitch = kalmanPitch.getAngle(pitch, rate, dt);
+  float filteredRoll = kalmanRoll.getAngle(roll, rate, dt);
+
+  // Debugging output
+  Serial.print("Filtered Altitude: ");
+  Serial.println(filteredAltitude);
+
+  Serial.print("Filtered Pitch: ");
+  Serial.println(filteredPitch);
+
+  Serial.print("Filtered Roll: ");
+  Serial.println(filteredRoll);
+
+  delay(100); // Adjust based on your application
+}
