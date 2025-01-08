@@ -1,0 +1,177 @@
+#include <Wire.h>
+#include <Servo.h>
+#include <Adafruit_BMP280.h>
+#include <MPU6050.h>
+#include "Kalman.h"
+#include "ppm.h"
+
+// Servo objects for ESCs
+Servo esc_1, esc_2, esc_3, esc_4;
+
+// PPM channel layout
+#define THROTTLE 3
+#define ROLL     1
+#define PITCH    2
+#define YAW      4
+#define ARMING   5
+#define ALT_HOLD_SWITCH 8 // Channel 8 for altitude hold
+
+// Constants
+const int neutralThrottle = 1000; // Neutral throttle for ESCs
+const int maxThrottle = 2000;     // Max throttle
+const int minThrottle = 1000;     // Min throttle
+
+// Kalman filters for stabilization and altitude control
+Kalman kalmanRoll, kalmanPitch, kalmanYaw, kalmanAltitude;
+
+// PID gains for stabilization and altitude control
+float kp = 1.5, ki = 0.01, kd = 0.5;   // Roll, Pitch, Yaw stabilization
+float kpAlt = 1.2, kiAlt = 0.01, kdAlt = 0.3; // Altitude control
+
+// PID variables
+float prevErrorRoll = 0, integralRoll = 0;
+float prevErrorPitch = 0, integralPitch = 0;
+float prevErrorYaw = 0, integralYaw = 0;
+
+float prevErrorAlt = 0, integralAlt = 0;
+
+// Barometer and IMU
+Adafruit_BMP280 bmp;
+MPU6050 imu;
+
+// Altitude Hold State
+bool altitudeHoldActive = false;
+
+// Timing
+unsigned long lastUpdate = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize ESCs
+  esc_1.attach(5);  // Front-left motor
+  esc_2.attach(6);  // Front-right motor
+  esc_3.attach(9);  // Back-right motor
+  esc_4.attach(10); // Back-left motor
+  setThrottle(neutralThrottle);
+
+  // Initialize IMU
+  Wire.begin();
+  imu.initialize();
+  if (!imu.testConnection()) {
+    Serial.println("MPU6050 connection failed!");
+    while (1);
+  }
+
+  // Initialize BMP280
+  if (!bmp.begin(0x76)) {
+    Serial.println("BMP280 initialization failed!");
+    while (1);
+  }
+
+  // Initialize PPM input on pin 3
+  ppm.begin(3, false);
+
+  // ESC Calibration
+  calibrateESCs();
+}
+
+void loop() {
+  // Time since last update
+  unsigned long currentTime = millis();
+  float dt = (currentTime - lastUpdate) / 1000.0; // Delta time in seconds
+  lastUpdate = currentTime;
+
+  // Get sensor data
+  float accelRoll, accelPitch, accelYaw;
+  float gyroRoll, gyroPitch, gyroYaw;
+  getIMUData(accelRoll, accelPitch, accelYaw, gyroRoll, gyroPitch, gyroYaw);
+
+  // Altitude data
+  float rawAltitude = bmp.readAltitude(1013.25); // Sea level pressure in hPa
+  float filteredAltitude = kalmanAltitude.getAngle(rawAltitude, 0.1, dt);
+
+  // Calculate angles using Kalman filters
+  float rollAngle = kalmanRoll.getAngle(accelRoll, gyroRoll, dt);
+  float pitchAngle = kalmanPitch.getAngle(accelPitch, gyroPitch, dt);
+  float yawAngle = kalmanYaw.getAngle(accelYaw, gyroYaw, dt);
+
+  // Read PPM channels
+  short throttle = ppm.read_channel(THROTTLE);
+  short rollInput = ppm.read_channel(ROLL);
+  short pitchInput = ppm.read_channel(PITCH);
+  short yawInput = ppm.read_channel(YAW);
+  altitudeHoldActive = ppm.read_channel(ALT_HOLD_SWITCH) > 1500;
+
+  // Map PPM inputs to control values
+  float targetRoll = map(rollInput, 1000, 2000, -30, 30);
+  float targetPitch = map(pitchInput, 1000, 2000, -30, 30);
+  float targetYaw = map(yawInput, 1000, 2000, -180, 180);
+  int targetThrottle = map(throttle, 1000, 2000, minThrottle, maxThrottle);
+  float targetAltitude = 2.0; // Desired altitude in meters
+
+  // Compute PID outputs
+  int rollOutput = computePID(rollAngle, targetRoll, prevErrorRoll, integralRoll, kp, ki, kd, dt);
+  int pitchOutput = computePID(pitchAngle, targetPitch, prevErrorPitch, integralPitch, kp, ki, kd, dt);
+  int yawOutput = computePID(yawAngle, targetYaw, prevErrorYaw, integralYaw, kp, ki, kd, dt);
+
+  int altitudeOutput = 0;
+  if (altitudeHoldActive) {
+    altitudeOutput = computePID(filteredAltitude, targetAltitude, prevErrorAlt, integralAlt, kpAlt, kiAlt, kdAlt, dt);
+  }
+
+  // Compute motor speeds
+  int motor_1_speed = constrain(targetThrottle + altitudeOutput + pitchOutput + rollOutput - yawOutput, minThrottle, maxThrottle);
+  int motor_2_speed = constrain(targetThrottle + altitudeOutput + pitchOutput - rollOutput + yawOutput, minThrottle, maxThrottle);
+  int motor_3_speed = constrain(targetThrottle + altitudeOutput - pitchOutput - rollOutput - yawOutput, minThrottle, maxThrottle);
+  int motor_4_speed = constrain(targetThrottle + altitudeOutput - pitchOutput + rollOutput + yawOutput, minThrottle, maxThrottle);
+
+  // Send motor speeds to ESCs
+  esc_1.writeMicroseconds(motor_1_speed);
+  esc_2.writeMicroseconds(motor_2_speed);
+  esc_3.writeMicroseconds(motor_3_speed);
+  esc_4.writeMicroseconds(motor_4_speed);
+
+  // Debug output
+  Serial.print("Altitude Hold: ");
+  Serial.print(altitudeHoldActive ? "ON" : "OFF");
+  Serial.print(" Altitude: ");
+  Serial.println(filteredAltitude);
+}
+
+void calibrateESCs() {
+  Serial.println("Calibrating ESCs...");
+  setThrottle(maxThrottle);
+  delay(5000);
+  setThrottle(minThrottle);
+  delay(5000);
+  Serial.println("Calibration complete.");
+}
+
+void setThrottle(int value) {
+  esc_1.writeMicroseconds(value);
+  esc_2.writeMicroseconds(value);
+  esc_3.writeMicroseconds(value);
+  esc_4.writeMicroseconds(value);
+}
+
+void getIMUData(float &accelRoll, float &accelPitch, float &accelYaw, float &gyroRoll, float &gyroPitch, float &gyroYaw) {
+  int16_t ax, ay, az, gx, gy, gz;
+  imu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+  accelRoll = atan2(ay, az) * 180 / M_PI;
+  accelPitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / M_PI;
+  accelYaw = 0; // Magnetometer required for yaw
+
+  gyroRoll = gx / 131.0; // Adjust based on IMU sensitivity
+  gyroPitch = gy / 131.0;
+  gyroYaw = gz / 131.0;
+}
+
+int computePID(float current, float target, float &prevError, float &integral, float kp, float ki, float kd, float dt) {
+  float error = target - current;
+  integral += error * dt;
+  float derivative = (error - prevError) / dt;
+  prevError = error;
+  return kp * error + ki * integral + kd * derivative;
+}
