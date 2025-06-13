@@ -1,0 +1,198 @@
+```
+#include <Servo.h>
+
+// PPM reader definitions
+#define PPM_PIN 2          // Pin connected to FS-iA6B PPM output
+#define MAX_CHANNELS 6     // FS-iA6B supports 6 channels
+#define SYNC_MIN 3000      // Minimum sync pulse width in microseconds
+
+// PPM channel layout
+#define THROTTLE 3
+#define ROLL     1
+#define PITCH    2
+#define YAW      4
+#define ARMING   5 // Arming channel
+
+// Create servo objects to control ESCs
+Servo esc_1;
+Servo esc_2;
+Servo esc_3;
+Servo esc_4;
+
+// Neutral values for motor control
+const int neutralThrottle = 1000; // Min throttle to arm ESCs
+const int maxThrottle = 2000;     // Max throttle
+const int minThrottle = 1000;     // Min throttle
+
+// Loop interval time (milliseconds between updates)
+const long interval = 50;
+unsigned long previousMillis = 0; // Stores last time loop was updated
+
+// Arming state
+bool isArmed = false;
+
+// PPM reader variables
+volatile uint16_t channelValues[MAX_CHANNELS]; // Array to store channel values
+volatile uint8_t channelIndex = 0;             // Current channel being read
+volatile uint32_t lastPulseTime = 0;           // Time of the last pulse
+volatile bool ppmReceived = false;             // Flag to indicate PPM activity
+
+void setup() {
+  // Start the serial port to display data
+  Serial.begin(115200);
+  while (!Serial && millis() < 5000); // Wait for Serial (for Leonardo, etc.)
+
+  // Initialize PPM reader
+  pinMode(PPM_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PPM_PIN), ppmInterrupt, RISING);
+
+  // Initialize channel values to 1000 (neutral)
+  for (uint8_t i = 0; i < MAX_CHANNELS; i++) {
+    channelValues[i] = 1000;
+  }
+
+  // Attach ESCs to pins
+  esc_1.attach(5);  // Motor 1 (Front-left)
+  esc_2.attach(6);  // Motor 2 (Front-right)
+  esc_3.attach(9);  // Motor 3 (Back-right)
+  esc_4.attach(10); // Motor 4 (Back-left)
+
+  // Initialize motors with neutral throttle (safety)
+  setThrottle(neutralThrottle);
+  delay(1000); // Allow some time for ESC initialization
+
+  // Set throttle to maximum to start calibration
+  Serial.println("Setting throttle to maximum...");
+  setThrottle(maxThrottle);
+  delay(5000); // Wait for ESCs to recognize max throttle
+
+  // Set throttle to minimum
+  Serial.println("Setting throttle to minimum...");
+  setThrottle(minThrottle);
+  delay(5000); // Wait for ESCs to recognize min throttle
+
+  Serial.println("ESC Calibration completed.");
+  Serial.println("Starting PPM Reader for FS-iA6B and Quadcopter Control...");
+}
+
+void loop() {
+  // Interval at which the PPM is updated
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+
+    // Check if PPM is being received
+    static bool lastPpmReceived = false;
+    bool currentPpmReceived;
+    cli();
+    currentPpmReceived = ppmReceived;
+    sei();
+    if (currentPpmReceived != lastPpmReceived) {
+      Serial.println(currentPpmReceived ? "PPM signal detected!" : "No PPM signal detected!");
+      lastPpmReceived = currentPpmReceived;
+    }
+
+    // Read the values from the PPM receiver
+    short throttle, roll, pitch, yaw, arming;
+    cli();
+    throttle = channelValues[THROTTLE - 1]; // Channels are 0-indexed
+    roll     = channelValues[ROLL - 1] - 1500; // Centering roll
+    pitch    = channelValues[PITCH - 1] - 1500; // Centering pitch
+    yaw      = channelValues[YAW - 1] - 1500; // Centering yaw
+    arming   = channelValues[ARMING - 1]; // Read arming channel
+    sei();
+
+    // Print raw channel values for debugging
+    Serial.print("Raw Channels: ");
+    cli();
+    for (uint8_t i = 0; i < MAX_CHANNELS; i++) {
+      Serial.print(channelValues[i]);
+      Serial.print(i < MAX_CHANNELS - 1 ? ", " : "");
+    }
+    sei();
+    Serial.println();
+
+    // Check if the arming channel is in the armed state (e.g., above 1500)
+    if (arming > 1500 && !isArmed) {
+      isArmed = true;
+      Serial.println("Arming the motors...");
+      setThrottle(neutralThrottle); // Arm the motors with neutral throttle
+    } else if (arming <= 1500 && isArmed) {
+      isArmed = false;
+      Serial.println("Disarming the motors...");
+      setThrottle(neutralThrottle); // Disarm the motors when arming is off
+    }
+
+    // If armed, update motor speeds
+    if (isArmed) {
+      // Adjust the throttle, roll, pitch, and yaw for drone control
+      int motor_1_speed = throttle + pitch + roll - yaw; // Front-left motor
+      int motor_2_speed = throttle + pitch - roll + yaw; // Front-right motor
+      int motor_3_speed = throttle - pitch - roll - yaw; // Back-right motor
+      int motor_4_speed = throttle - pitch + roll + yaw; // Back-left motor
+
+      // Constrain motor values to be between minThrottle and maxThrottle
+      motor_1_speed = constrain(motor_1_speed, minThrottle, maxThrottle);
+      motor_2_speed = constrain(motor_2_speed, minThrottle, maxThrottle);
+      motor_3_speed = constrain(motor_3_speed, minThrottle, maxThrottle);
+      motor_4_speed = constrain(motor_4_speed, minThrottle, maxThrottle);
+
+      // Write the constrained values to the ESCs
+      esc_1.writeMicroseconds(motor_1_speed);
+      esc_2.writeMicroseconds(motor_2_speed);
+      esc_3.writeMicroseconds(motor_3_speed);
+      esc_4.writeMicroseconds(motor_4_speed);
+
+      // Print the values to the Serial Monitor for debugging
+      Serial.print("Throttle: ");
+      Serial.print(throttle);
+      Serial.print("\tRoll: ");
+      Serial.print(roll + 1500);  // Print actual value from PPM
+      Serial.print("\tPitch: ");
+      Serial.print(pitch + 1500); // Print actual value from PPM
+      Serial.print("\tYaw: ");
+      Serial.print(yaw + 1500);   // Print actual value from PPM
+      Serial.print("\tM1: ");
+      Serial.print(motor_1_speed);
+      Serial.print("\tM2: ");
+      Serial.print(motor_2_speed);
+      Serial.print("\tM3: ");
+      Serial.print(motor_3_speed);
+      Serial.print("\tM4: ");
+      Serial.println(motor_4_speed);
+    } else {
+      // If not armed, set motors to neutral throttle
+      setThrottle(neutralThrottle);
+    }
+  }
+}
+
+// Function to set throttle for all ESCs
+void setThrottle(int value) {
+  esc_1.writeMicroseconds(value);
+  esc_2.writeMicroseconds(value);
+  esc_3.writeMicroseconds(value);
+  esc_4.writeMicroseconds(value);
+}
+
+// Interrupt handler for PPM signal
+void ppmInterrupt() {
+  uint32_t currentTime = micros();
+  uint32_t pulseWidth = currentTime - lastPulseTime;
+  lastPulseTime = currentTime;
+  
+  // Indicate PPM activity
+  ppmReceived = true;
+  
+  // Check for sync pulse (longer than SYNC_MIN)
+  if (pulseWidth > SYNC_MIN) {
+    channelIndex = 0; // Reset to first channel
+  } else if (channelIndex < MAX_CHANNELS) {
+    // Store pulse width as channel value (typically 1000–2000 us)
+    if (pulseWidth >= 800 && pulseWidth <= 2200) { // Filter valid range
+      channelValues[channelIndex] = pulseWidth;
+    }
+    channelIndex++;
+  }
+    }```
+    
